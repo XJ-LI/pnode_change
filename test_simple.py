@@ -26,7 +26,7 @@ from petsc4py import PETSc
 from pnode import petsc_adjoint
 
 import scipy.io
-data = scipy.io.loadmat('/content/petsc/pnode/database_double_pendulum.mat')
+data = scipy.io.loadmat('/content/petsc/pnode/database_double_pendulum.mat')  # may need to change the dir
 print(data.keys())
 L = data['L']
 M = data['M']
