@@ -17,6 +17,8 @@ sys.path.append('/content/petsc/arch-linux-opt/lib')
 parser = argparse.ArgumentParser('ODE demo')
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--niters', type=int, default=2000)
+parser.add_argument('--implicit_form', action='store_false')
+parser.add_argument('--method', type=str, choices=['euler', 'beuler', 'cn'], default='beuler')
 args, unknown = parser.parse_known_args()
 
 import petsc4py
@@ -78,7 +80,7 @@ func = ODEfunc(layers).to(device).double()
 optimizer = optim.AdamW(func.parameters(), lr=lr)
 
 ode = petsc_adjoint.ODEPetsc()
-ode.setupTS(z0_size, func, step_size=step_size, implicit_form=True, method='cn')
+ode.setupTS(z0_size, func, step_size=step_size, implicit_form=args.implicit_form, method=args.method)
 loss_func = nn.MSELoss(reduction='mean')
 
 print('number of parameters: ', count_parameters(func))
