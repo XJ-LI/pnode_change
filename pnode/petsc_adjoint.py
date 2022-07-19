@@ -273,7 +273,6 @@ class ODEPetsc(object):
     def setupTS(self, u_tensor, func, step_size=0.01, enable_adjoint=True, implicit_form=False, use_dlpack=True, method='euler'):
         """
         Set up the PETSc ODE solver before it is used.
-
         Args:
             u_tensor: N-D Tensor giving meta information such as size, dtype and device, its values are not used.
             func: The callback function passed to PETSc TS
@@ -407,11 +406,9 @@ class ODEPetsc(object):
             du/dt = fun(t, u), u(t[0]) = u0
             ```
         where u is a Tensor or tuple of Tensors of any shape.
-
         Args:
             u0: N-D Tensor giving the initial condition.
             t: 1-D Tensor specifying a sequence of time points.
-
         Returns
             solution: Tensor, where the frist dimension corresponds to the input time points.
         """
@@ -450,8 +447,8 @@ class ODEPetsc(object):
             else:
                 solution = torch.stack([torch.from_numpy(tspan_sols[i].array_r.reshape(self.tensor_size)) for i in range(len(tspan_sols))], dim=0)
             self.ts.setPostStep(None)
-        if self.cur_sol_index != len(self.sol_times):
-            raise Exception("TSSolve fails to step on all the specified points")
+            if self.cur_sol_index != len(self.sol_times):
+                raise Exception("TSSolve fails to step on all the specified points")
         return solution
 
     def petsc_adjointsolve(self, t, i=1):
