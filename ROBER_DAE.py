@@ -5,12 +5,13 @@
 #   pnode petsc4py scipy matplotlib torch tensorboardX
 
 #######################################
+
+# update the data generation phase with dae as well
+
 import os
 import argparse
 import time
 import numpy as np
-from scipy import integrate
-solve_ivp = integrate.solve_ivp
 from tensorboardX import SummaryWriter
 
 import torch
@@ -27,7 +28,7 @@ matplotlib.use('Agg')
 parser = argparse.ArgumentParser('ROBER DAE')
 parser.add_argument('--pnode_method', type=str, choices=['beuler', 'cn'], default='cn')
 parser.add_argument('--normalize', type=str, choices=['minmax','mean'], default=None)
-parser.add_argument('--data_size', type=int, default=40)
+parser.add_argument('--data_size', type=int, default=100)
 parser.add_argument('--steps_per_data_point', type=int, default=1)
 parser.add_argument('--batch_size', type=int, default=40)
 parser.add_argument('--niters', type=int, default=10000)
@@ -44,19 +45,17 @@ parser.add_argument('--hotstart', action='store_true')
 parser.add_argument('--petsc_ts_adapt', action='store_true')
 args, unknown = parser.parse_known_args()
 
-# Set these random seeds, so everything can be reproduced.
-# np.random.seed(args.seed)
-# torch.manual_seed(args.seed)
-# torch.backends.cudnn.deterministic = True
-# torch.backends.cudnn.benchmark = False
-
+import petsc4py
+sys.argv = [sys.argv[0]] + unknown
+petsc4py.init(sys.argv)
+from pnode import petsc_adjoint_mod
+    
 os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 print('device: ', device)
 #device = 'cpu'
 initial_state = torch.tensor([[1., 0., 0.]], dtype=torch.float64)
 endtime = 100.0
-#t = torch.linspace(0, endtime, args.data_size, dtype=torch.float64)
 t = torch.cat((torch.tensor([0]),torch.logspace(start=-5, end=2, steps=args.data_size)))
 if not args.petsc_ts_adapt:
     unknown.append('-ts_adapt_type')
@@ -66,31 +65,23 @@ if not args.petsc_ts_adapt:
 else:
     step_size = 1e-5
 
-def fun(t, state):
-    k1 = 0.04
-    k2 = 3e7
-    k3 = 1e4
-    f1 = -k1*state[0] + k3*state[1]*state[2]
-    f2 = k1*state[0] - k3*state[1]*state[2] - k2*state[1]**2
-    f3 = k2*state[1]**2
-    return np.array([f1, f2, f3])
+class Lambda(nn.Module):   
+    def forward(self, t, y):
+        k1 = 0.04
+        k2 = 3e7
+        k3 = 1e4
+        f = torch.clone(y)
+        f[0] = -k1*y[0] + k3*y[1]*y[2]
+        f[1] = k1*y[0] - k3*y[1]*y[2] - k2*y[1]**2
+        f[2] = y[0] + y[1] +y[2] - 1
+        return f
+M = torch.eye(3); M[-1,-1]=0.0
 
-def jac(t, state):
-    k1 = 0.04
-    k2 = 3e7
-    k3 = 1e4
-    return np.array([[-k1, k3*state[2], k3*state[1]],
-                    [k1, -2.0*k2*state[1]-k3*state[2], -k3*state[1]],
-                    [0, 2.0*k2*state[1], 0]])
-
-def get_data(initial_state, **kwargs):
-    if not 'rtol' in kwargs.keys():
-        kwargs['rtol'] = 1e-11
-        kwargs['atol'] = 1e-14
-    t_eval = t.detach().numpy()
-    path = solve_ivp(fun=fun, jac=jac, t_span=[0, endtime], y0=initial_state.cpu().flatten(),
-                     t_eval=t_eval, **kwargs)
-    data = torch.from_numpy(path['y'].T)
+def get_data(initial_state):
+    ode0 = petsc_adjoint_mod.ODEPetsc()
+    ode0.setupTS(initial_state.flatten(), Lambda(), step_size=step_size, enable_adjoint=False, use_dlpack=False, implicit_form=True, method='cn', M=M)
+    data = ode0.odeint(initial_state.flatten(), t)
+    
     if args.normalize == 'minmax':
         shift = data.min(0, keepdim=True)[0]
         scale = data.max(0, keepdim=True)[0] - data.min(0, keepdim=True)[0]
@@ -103,9 +94,9 @@ def get_data(initial_state, **kwargs):
         shift = torch.zeros_like(data[0])
         scale = torch.ones_like(data[0])
     return data, shift, scale
-#reshape(args.data_size, 3)
 
-true_y,shift,scale = get_data(initial_state, method='BDF')
+
+true_y,shift,scale = get_data(initial_state)
 if not args.double_prec:
     true_y = true_y.float()
     t = t.float()
@@ -114,16 +105,6 @@ shift = shift.to(device)
 scale = scale.to(device)
 t = t.to(device)
 true_y0 = true_y[0]
-
-class Lambda(nn.Module):
-    def forward(self, t, y):
-        k1 = 0.04
-        k2 = 3e7
-        k3 = 1e4
-        f1 = -k1*y[0] + k3*y[1]*y[2]
-        f2 = k1*y[0] - k3*y[1]*y[2] - k2*y[1]**2
-        f3 = k2*y[1]**2
-        return torch.stack((f1, f2, f3), -1)
 
 def get_batch():
     s = torch.from_numpy(np.sort(np.random.choice(np.arange(1, args.data_size+1, dtype=np.int64), args.batch_size, replace=False)))
@@ -241,23 +222,9 @@ class RunningAverageMeter(object):
             self.avg = self.avg * self.momentum + val * (1 - self.momentum)
         self.val = val
 
-def validate_data():
-    func_validate = Lambda().to(device)
-    ode_validate = petsc_adjoint.ODEPetsc()
-    ode_validate.setupTS(true_y0, func_validate, step_size=step_size, method=args.pnode_method, enable_adjoint=False, implicit_form=args.implicit_form)
-    pred_y_validate = ode_validate.odeint_adjoint(true_y0, t)
-    loss_validate = torch.mean(torch.abs(pred_y_validate - true_y)).cpu()
-    loss_std_validate = torch.std(torch.abs(pred_y_validate - true_y)).cpu()
-    print('Validate | Loss {:.6f} | Loss std {:.6f}'.format(loss_validate, loss_std_validate))
-    visualize(t, true_y, pred_y_validate, func_validate, 0, 'validate')
 
 if __name__ == '__main__':
-    # petsc4py_path = os.path.join(os.environ['PETSC_DIR'],os.environ['PETSC_ARCH'],'lib')
-    # sys.path.append(petsc4py_path)
-    import petsc4py
-    sys.argv = [sys.argv[0]] + unknown
-    petsc4py.init(sys.argv)
-    from pnode import petsc_adjoint_mod
+    
 
     ii = 0
     if not os.path.exists(args.train_dir):
