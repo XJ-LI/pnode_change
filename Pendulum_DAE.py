@@ -2,6 +2,7 @@
 # Example of usage:
 #   python3 Pendulum_DAE.py --double_prec --implicit_form -ts_trajectory_type memory
 #######################################
+# problem DAE of index 3
 import os
 import argparse
 import time
@@ -27,7 +28,7 @@ parser.add_argument('--batch_size', type=int, default=40)
 parser.add_argument('--niters', type=int, default=5000)
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--test_freq', type=int, default=100)
-parser.add_argument('--activation', type=str, choices=['gelu', 'tanh'], default='gelu')
+parser.add_argument('--activation', type=str, choices=['gelu', 'tanh', 'elu'], default='gelu')
 parser.add_argument('--viz', action='store_true')
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--implicit_form', action='store_true')
@@ -65,7 +66,7 @@ t = torch.linspace(0., 10.0, args.data_size+1, dtype=torch.float64)
 if not args.petsc_ts_adapt:
     unknown.append('-ts_adapt_type')
     unknown.append('none') # disable adaptor in PETSc
-    t_traj = torch.logspace(start=0, end=10, steps=args.data_size+1+(args.data_size)*(args.steps_per_data_point-1))
+    t_traj = torch.linspace(start=0, end=10, steps=args.data_size+1+(args.data_size)*(args.steps_per_data_point-1))
     step_size = t_traj[1] - t_traj[0]
 else:
     step_size = 1e-3
@@ -76,11 +77,11 @@ class Lambda(nn.Module):
         f[1] = y[3]
         f[2] = -y[0]*y[4]
         f[3] = -y[1]*y[4] - g
-        f[4] = y[0]**2 + y[1]**2 - 1.
+        f[4] = y[4]*(y[0]**2 + y[1]**2) + g*y[1] - (y[2]**2 + y[3]**2)
         return f
 M = torch.eye(5); M[-1,-1] = 0.
 ode0 = petsc_adjoint_mod.ODEPetsc()        
-ode0.setupTS(true_y0, Lambda(), step_size=step_size, enable_adjoint=False, use_dlpack=False, implicit_form=True, method='beuler', M=M)
+ode0.setupTS(true_y0, Lambda(), step_size=step_size, enable_adjoint=False, use_dlpack=False, implicit_form=True, method='cn', M=M)
 true_y = ode0.odeint(true_y0, t)
 
 if not args.double_prec:
@@ -104,11 +105,12 @@ def makedirs(dirname):
 if args.viz:
     makedirs(os.path.join(args.train_dir, 'png'))
     # import matplotlib.pyplot as plt
-    fig = plt.figure(figsize=(8, 8), facecolor='white')
-    ax1 = fig.add_subplot(221)
-    ax2 = fig.add_subplot(222)
-    ax3 = fig.add_subplot(223)
-    ax4 = fig.add_subplot(224)
+    fig = plt.figure(figsize=(8, 12), facecolor='white')
+    ax1 = fig.add_subplot(321)
+    ax2 = fig.add_subplot(322)
+    ax3 = fig.add_subplot(323)
+    ax4 = fig.add_subplot(324)
+    ax5 = fig.add_subplot(325)
     plt.show(block=False)
 
 #marker_style1 = dict(marker='o', markersize=8, mfc='None')
@@ -143,6 +145,12 @@ def visualize(t, true_y, pred_y, odefunc, itr, name):
         ax4.set_ylabel(r'$v_y$')
         ax4.plot(t.cpu().numpy(), true_y.cpu().numpy()[:, 3], 'g-', linewidth=lw, **marker_style1)
         ax4.plot(t.cpu().numpy(), pred_y.cpu().numpy()[:, 3], 'b--', linewidth=lw, **marker_style2)
+        
+        ax5.cla()
+        ax5.set_xlabel('t')
+        ax5.set_ylabel(r'$Lambda$')
+        ax5.plot(t.cpu().numpy(), true_y.cpu().numpy()[:, 4], 'g-', linewidth=lw, **marker_style1)
+        ax5.plot(t.cpu().numpy(), pred_y.cpu().numpy()[:, 4], 'b--', linewidth=lw, **marker_style2)
 
         fig.tight_layout()
         plt.savefig(os.path.join(args.train_dir, 'png')+'/{:03d}'.format(itr)+name)
@@ -158,10 +166,12 @@ class ODEFunc(nn.Module):
         elif args.activation == 'tanh':
             self.act = nn.Tanh()
         else:
-            self.act = nn.ELU()
+            self.act = torch.nn.ELU()
         if args.double_prec:
             self.net = nn.Sequential(
                 nn.Linear(5, 10, bias=False).double(),
+                self.act.double(),
+                nn.Linear(10, 10, bias=False).double(),
                 self.act.double(),
                 nn.Linear(10, 10, bias=False).double(),
                 self.act.double(),
@@ -172,6 +182,8 @@ class ODEFunc(nn.Module):
         else:
             self.net = nn.Sequential(
                 nn.Linear(5, 10, bias=False),
+                self.act,
+                nn.Linear(10, 10, bias=False),
                 self.act,
                 nn.Linear(10, 10, bias=False),
                 self.act,
@@ -188,7 +200,7 @@ class ODEFunc(nn.Module):
         self.nfe += 1
         f = torch.clone(y)
         f[:-1] = self.net(y)
-        f[-1] = y[0]**2 + y[1]**2 - r0**2
+        f[-1] = y[4]*(y[0]**2 + y[1]**2) + g*y[1] - (y[2]**2 + y[3]**2)
         return f
 
 
@@ -227,7 +239,7 @@ if __name__ == '__main__':
         optimizer_PNODE.step()
         
         loss_save[itr-1] = loss_PNODE
-        deviation_save[itr-1] = torch.mean(torch.abs(pred_y_PNODE[:,0]**2 + pred_y_PNODE[:,1]**2 - r0**2))
+        deviation_save[itr-1] = torch.mean(torch.abs(pred_y_PNODE[:,4]*(pred_y_PNODE[:,0]**2 + pred_y_PNODE[:,1]**2) + g*pred_y_PNODE[:,1] - (pred_y_PNODE[:,2]**2 + pred_y_PNODE[:,3]**2))) 
         
         nfe_b_PNODE = func_PNODE.nfe
         func_PNODE.nfe = 0
@@ -238,7 +250,7 @@ if __name__ == '__main__':
                 test_t = t
                 test_y = true_y
                 pred_y_PNODE = ode_test_PNODE.odeint_adjoint(true_y0, test_t)
-                print('check equality constraint, deviation: ', torch.mean(torch.abs(pred_y_PNODE[:,0]**2 + pred_y_PNODE[:,1]**2 - r0**2)))              
+                print('check equality constraint, deviation: ', deviation_save[itr-1])              
                 loss_PNODE_array= loss_PNODE_array + [loss_PNODE.item()] + [torch.mean(torch.abs(pred_y_PNODE - test_y)).cpu()]
                 print('PNODE: Iter {:05d} | Time {:.6f} | Total Loss {:.6f} | NFE-F {:04d} | NFE-B {:04d}'.format(itr, end_PNODE-start_PNODE, loss_PNODE_array[-1], nfe_f_PNODE, nfe_b_PNODE))
 
@@ -256,7 +268,6 @@ if __name__ == '__main__':
                         'best_loss': best_loss,
                         'func_state_dict': func_PNODE.state_dict(),
                         'optimizer_state_dict': optimizer_PNODE.state_dict(),
-                        'normalize_option': args.normalize,
                     }, ckpt_path)
                     print('Saved new best results (loss={}) at Iter {}'.format(best_loss,itr))
                 ii += 1
