@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import sys
-#sys.path.append('/content/petsc/arch-linux-opt/lib')  # edit path to petsc location
+sys.path.append('/content/petsc/arch-linux-opt/lib')  # edit path to petsc location
 import copy
 import scipy
 from scipy.optimize import fsolve
