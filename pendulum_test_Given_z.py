@@ -30,7 +30,7 @@ parser.add_argument('--batch_size', type=int, default=5)
 parser.add_argument('--niters', type=int, default=5000)
 parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--test_freq', type=int, default=100)
-parser.add_argument('--activation', type=str, choices=['gelu', 'tanh', 'elu'], default='gelu')
+parser.add_argument('--activation', type=str, choices=['gelu', 'tanh'], default='gelu')
 parser.add_argument('--viz', action='store_true')
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--implicit_form', action='store_true')
@@ -63,7 +63,7 @@ t = torch.linspace(0., 0.5, args.data_size+1, dtype=torch.float64)
 if not args.petsc_ts_adapt:
     unknown.append('-ts_adapt_type')
     unknown.append('none') # disable adaptor in PETSc
-    t_traj = torch.linspace(start=0, end=1, steps=args.data_size+1+(args.data_size)*(args.steps_per_data_point-1))
+    t_traj = torch.linspace(start=0, end=0.5, steps=args.data_size+1+(args.data_size)*(args.steps_per_data_point-1))
     step_size = t_traj[1] - t_traj[0]
 else:
     step_size = 1e-2
