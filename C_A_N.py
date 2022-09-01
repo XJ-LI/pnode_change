@@ -1,6 +1,6 @@
 ########################################
 # Example of usage:
-#   python3 Pendulum_DAE.py --double_prec --implicit_form -ts_trajectory_type memory
+#   python3 C_A_N_normalize.py --double_prec -ts_trajectory_type memory --niters 3000 --implicit_form  --viz --pnode_method cn --activation tanh --pnode_method cn  --test_freq 50  --normalize minmax
 #######################################
 # problem DAE of index 3
 import os
